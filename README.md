@@ -5,7 +5,7 @@
 
 Open-source Model Context Protocol (MCP) connector that lets Claude read live data from [Clio](https://www.clio.com) (matters, custom fields, notes, contacts, documents, folders, tasks, calendar, and billing) without copying client information into chat windows. Built for law firms that care about attorney-client privilege, ABA Opinion 512 compliance, and keeping AI workflows inside their existing practice management stack.
 
-> **TL;DR:** 36 Clio tools exposed to Claude across stdio and HTTP/SSE transports. Audit-logged for ABA Opinion 512. OAuth tokens encrypted at rest with AES-256-GCM. Local-only by default: you register your own Clio developer app, and no relay server sits in between. A separate one-click "listed" variant for the Clio App Directory uses a minimal login-only broker instead, see [Listed / one-click install variant](#listed--one-click-install-variant-app-directory). MIT license, free forever.
+> **TL;DR:** 38 Clio tools exposed to Claude across stdio and HTTP/SSE transports. Audit-logged for ABA Opinion 512. OAuth tokens encrypted at rest with AES-256-GCM. Local-only by default: you register your own Clio developer app, and no relay server sits in between. A separate one-click "listed" variant for the Clio App Directory uses a minimal login-only broker instead, see [Listed / one-click install variant](#listed--one-click-install-variant-app-directory). MIT license, free forever.
 
 **Who this is for:** Law firm IT, legal operations teams, tech-forward partners, and engineers at legal tech companies. If you can follow a five-step terminal install, you can use this.
 
@@ -462,13 +462,15 @@ Claude selects and calls these tools automatically based on your questions. You 
 | `list_calendar_entries` | `from`, `to`, `limit`, `page_token` | Lists calendar entries within a date range (YYYY-MM-DD or YYYY-MM-DDTHH:MM); returns a paginated envelope with `total_count`, `has_more`, and `next_page_token` |
 | `create_calendar_entry` | `summary`, `start_at`, `end_at`, `calendar_owner_id`, `description`, `all_day`, `matter_id`, `location`, `send_email_notification`, `attendee_ids` | Creates a calendar entry (hearing, deadline, meeting); `start_at`/`end_at` accept date or datetime |
 
-### Time entries (3 tools)
+### Time entries (5 tools)
 
 | Tool | Inputs | What it does |
 |---|---|---|
 | `list_time_entries` | `matter_id`, `start_date`, `end_date`, `limit`, `page_token` | Lists billable time entries with optional filters; returns a paginated envelope with `total_count`, `has_more`, and `next_page_token` |
-| `log_time_entry` | `matter_id`, `date`, `quantity_in_hours`, `note`, `price`, `non_billable`, `no_charge`, `activity_description_id`, `user_id` | Creates a new billable (or non-billable) time entry on a matter |
-| `create_activity` | `type`, `date`, `matter_id`, `note`, `quantity_in_hours`, `price`, `non_billable`, `no_charge`, `activity_description_id`, `user_id`, `reference`, `tax_setting` | Creates any Clio activity type: TimeEntry, ExpenseEntry, HardCostEntry, or SoftCostEntry |
+| `log_time_entry` | `matter_id`, `date`, `quantity_in_hours`, `note`, `price`, `non_billable`, `no_charge`, `activity_description_id`, `utbms_task_id`, `utbms_activity_id`, `user_id` | Creates a new billable (or non-billable) time entry on a matter. UTBMS task and activity codes go on the entry as a pair, or via an `activity_description_id` that already names a UTBMS description |
+| `create_activity` | `type`, `date`, `matter_id`, `note`, `quantity_in_hours`, `price`, `non_billable`, `no_charge`, `activity_description_id`, `utbms_task_id`, `utbms_activity_id`, `user_id`, `reference`, `tax_setting` | Creates any Clio activity type: TimeEntry, ExpenseEntry, HardCostEntry, or SoftCostEntry |
+| `list_activity_descriptions` | `type`, `flat_rate`, `user_id`, `rate_for_matter_id`, `rate_for_user_id`, `limit`, `page_token` | Lists the firm's activity descriptions (billing categories) with their IDs, UTBMS task/activity codes, and, when `rate_for_matter_id` is given, the rate each resolves to on that matter |
+| `list_utbms_codes` | `type`, `utbms_set_id`, `limit`, `page_token` | Lists UTBMS codes (task codes such as L120, activity codes such as A104, expense codes such as E101) with the IDs `log_time_entry` takes as `utbms_task_id` / `utbms_activity_id` |
 
 ### Billing (1 tool)
 

@@ -181,6 +181,96 @@ describe("log_time_entry", () => {
   });
 });
 
+// ─── UTBMS codes on time entries ──────────────────────────────────────────────
+
+describe("log_time_entry UTBMS codes", () => {
+  it("nests utbms_task_id and utbms_activity_id under activity_description, as Clio's Activity#create expects", async () => {
+    const { handlers } = buildServer();
+    await handlers["log_time_entry"]({ matter_id: 1, date: "2026-01-15", quantity_in_hours: 1, utbms_task_id: 7120, utbms_activity_id: 7104 });
+    const [, body] = mockClioPost.mock.calls[0];
+    expect((body as any).data.activity_description).toEqual({ utbms_task_id: 7120, utbms_activity_id: 7104 });
+  });
+
+  it("sends the description id alongside the codes when all three are given", async () => {
+    const { handlers } = buildServer();
+    await handlers["log_time_entry"]({ matter_id: 1, date: "2026-01-15", quantity_in_hours: 1, activity_description_id: 42, utbms_task_id: 7120, utbms_activity_id: 7104 });
+    const [, body] = mockClioPost.mock.calls[0];
+    expect((body as any).data.activity_description).toEqual({ id: 42, utbms_task_id: 7120, utbms_activity_id: 7104 });
+  });
+
+  it("rejects a lone utbms_task_id without a description id, before any request goes out", async () => {
+    const { handlers } = buildServer();
+    const result = await handlers["log_time_entry"]({ matter_id: 1, date: "2026-01-15", quantity_in_hours: 1, utbms_task_id: 7120 }) as any;
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toMatch(/must be sent together/);
+    expect(mockClioPost).not.toHaveBeenCalled();
+    expect(mockAppendAuditLog).toHaveBeenCalledWith(expect.objectContaining({
+      tool: "log_time_entry", outcome: "error", matter_id: 1,
+      args: expect.objectContaining({ utbms_task_id: 7120 }),
+    }));
+  });
+
+  it("allows a lone UTBMS id when activity_description_id already names a UTBMS description", async () => {
+    const { handlers } = buildServer();
+    const result = await handlers["log_time_entry"]({ matter_id: 1, date: "2026-01-15", quantity_in_hours: 1, activity_description_id: 42, utbms_activity_id: 7104 }) as any;
+    expect(result.isError).toBeUndefined();
+    const [, body] = mockClioPost.mock.calls[0];
+    expect((body as any).data.activity_description).toEqual({ id: 42, utbms_activity_id: 7104 });
+  });
+
+  it("asks Clio to echo the attached description and reports it in the confirmation", async () => {
+    mockClioPost.mockResolvedValue({ data: { ...FAKE_ENTRY, activity_description: { id: 42, name: "Review/analyze", utbms_task_id: 7120, utbms_activity_id: 7104 } } });
+    const { handlers } = buildServer();
+    const result = await handlers["log_time_entry"]({ matter_id: 1, date: "2026-01-15", quantity_in_hours: 1, activity_description_id: 42 }) as any;
+    const [, , params] = mockClioPost.mock.calls[0];
+    expect((params as any).fields).toContain("activity_description{id,name,utbms_task_id,utbms_activity_id}");
+    const parsed = JSON.parse(result.content[0].text);
+    expect(parsed.time_entry.activity_description).toEqual({ id: 42, name: "Review/analyze", utbms_task_id: 7120, utbms_activity_id: 7104 });
+  });
+
+  it("reports a null activity_description when the entry has none", async () => {
+    const { handlers } = buildServer();
+    const result = await handlers["log_time_entry"]({ matter_id: 1, date: "2026-01-15", quantity_in_hours: 1 }) as any;
+    expect(JSON.parse(result.content[0].text).time_entry.activity_description).toBeNull();
+  });
+});
+
+describe("create_activity UTBMS codes", () => {
+  it("nests the codes under activity_description for a TimeEntry", async () => {
+    const { handlers } = buildServer();
+    await handlers["create_activity"]({ type: "TimeEntry", date: "2026-01-15", matter_id: 1, quantity_in_hours: 0.5, utbms_task_id: 7120, utbms_activity_id: 7104 });
+    const [, body] = mockClioPost.mock.calls[0];
+    expect((body as any).data.activity_description).toEqual({ utbms_task_id: 7120, utbms_activity_id: 7104 });
+  });
+
+  it("rejects a lone utbms_activity_id without a description id", async () => {
+    const { handlers } = buildServer();
+    const result = await handlers["create_activity"]({ type: "TimeEntry", date: "2026-01-15", matter_id: 1, quantity_in_hours: 0.5, utbms_activity_id: 7104 }) as any;
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toMatch(/must be sent together/);
+    expect(mockClioPost).not.toHaveBeenCalled();
+  });
+});
+
+describe("list_time_entries activity_description", () => {
+  it("includes each entry's attached description, or null", async () => {
+    mockClioGet.mockResolvedValue({
+      data: [
+        { ...FAKE_ENTRY, activity_description: { id: 42, name: "Review/analyze", utbms_task_id: 7120, utbms_activity_id: 7104 } },
+        { ...FAKE_ENTRY, id: 100 },
+      ],
+      meta: { records: 2, paging: {} },
+    });
+    const { handlers } = buildServer();
+    const result = await handlers["list_time_entries"]({ limit: 25 }) as any;
+    const [with_, without] = JSON.parse(result.content[0].text).time_entries;
+    expect(with_.activity_description).toEqual({ id: 42, name: "Review/analyze", utbms_task_id: 7120, utbms_activity_id: 7104 });
+    expect(without.activity_description).toBeNull();
+    const [, params] = mockClioGet.mock.calls[0];
+    expect(params.fields).toContain("activity_description{id,name,utbms_task_id,utbms_activity_id}");
+  });
+});
+
 // ─── create_activity ──────────────────────────────────────────────────────────
 
 describe("create_activity", () => {

@@ -4,6 +4,31 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+### Added
+- **`list_activity_descriptions`** lists the firm's activity descriptions
+  (billing categories) with the ids `log_time_entry` and `create_activity`
+  take as `activity_description_id`. UTBMS descriptions come back with their
+  task and activity codes as objects (`{ id, code, name }`, so the "L120" /
+  "A104" strings are visible, not just ids), and `rate_for_matter_id` resolves
+  the rate each description would bill at on that matter. Filters: `type`
+  (`utbms` / `clio`), `flat_rate`, `user_id`. Field selection follows Clio's
+  v4 OpenAPI document; the association expansions have **not** been exercised
+  against a live account yet, so the read uses the same field-fallback path as
+  `list_matters` and reports a `fields_warning` rather than failing if Clio
+  rejects one.
+- **`list_utbms_codes`** lists UTBMS task, activity and expense codes from
+  `GET /utbms/codes.json` (filter by `type` and `utbms_set_id`), which is where
+  the ids for the two new parameters below come from.
+- **`utbms_task_id` and `utbms_activity_id` on `log_time_entry` and
+  `create_activity`.** Per Clio's Activity#create schema the codes ride on the
+  entry, nested under `activity_description` next to `id`, and must be sent as
+  a pair unless `activity_description_id` already names a UTBMS description;
+  the tools reject a lone code before the request goes out. Clio requires both
+  on a billable time entry when the matter's `require_utbms_codes` is on.
+- Time entry reads and write confirmations now include the attached
+  `activity_description` (id, name, UTBMS ids), so a caller can see whether an
+  entry actually carries codes.
+
 ## [2.3.0] - 2026-09-07
 
 Matter stages and `create_custom_field`, previously staged and unverified,

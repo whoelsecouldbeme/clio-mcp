@@ -26,6 +26,7 @@ import { registerActivitySummaryTools } from "./activitySummary.js";
 import { registerTaskTools } from "./tasks.js";
 import { registerCalendarTools } from "./calendar.js";
 import { registerActivityTools } from "./activities.js";
+import { registerActivityDescriptionTools } from "./activityDescriptions.js";
 import { registerBillingTools } from "./billing.js";
 import { registerNoteTools } from "./notes.js";
 import { registerUserTools } from "./users.js";
@@ -106,6 +107,8 @@ export const TOOL_META: Readonly<Record<string, ToolMeta>> = {
   list_time_entries: { title: "List time entries", readOnly: true },
   log_time_entry: { title: "Log time entry", readOnly: false },
   create_activity: { title: "Create activity", readOnly: false },
+  list_activity_descriptions: { title: "List activity descriptions", readOnly: true },
+  list_utbms_codes: { title: "List UTBMS codes", readOnly: true },
   // billing
   get_billing_summary: { title: "Get billing summary", readOnly: true },
   // notes
@@ -131,6 +134,7 @@ export const REGISTRARS: ReadonlyArray<(server: McpServer) => void> = [
   registerTaskTools,
   registerCalendarTools,
   registerActivityTools,
+  registerActivityDescriptionTools,
   registerBillingTools,
   registerNoteTools,
   registerUserTools,

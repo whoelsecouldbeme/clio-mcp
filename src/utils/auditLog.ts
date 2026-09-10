@@ -155,8 +155,11 @@ export const AUDIT_ARG_ALLOWLIST: RedactPolicy = {
   create_calendar_entry: ["start_at", "end_at", "calendar_owner_id", "all_day", "matter_id", "send_email_notification", "attendee_ids"],
   // time entries and activities (never the note or reference text)
   list_time_entries: ["matter_id", "start_date", "end_date", "limit"],
-  log_time_entry: ["matter_id", "date", "quantity_in_hours", "price", "non_billable", "no_charge", "activity_description_id", "user_id"],
-  create_activity: ["type", "date", "matter_id", "quantity_in_hours", "price", "non_billable", "no_charge", "activity_description_id", "user_id", "tax_setting"],
+  log_time_entry: ["matter_id", "date", "quantity_in_hours", "price", "non_billable", "no_charge", "activity_description_id", "utbms_task_id", "utbms_activity_id", "user_id"],
+  create_activity: ["type", "date", "matter_id", "quantity_in_hours", "price", "non_billable", "no_charge", "activity_description_id", "utbms_task_id", "utbms_activity_id", "user_id", "tax_setting"],
+  // billing categories and UTBMS code tables (firm configuration, never client data; no free text accepted)
+  list_activity_descriptions: ["type", "flat_rate", "user_id", "rate_for_matter_id", "rate_for_user_id", "limit", "page_token"],
+  list_utbms_codes: ["type", "utbms_set_id", "limit", "page_token"],
   // billing
   get_billing_summary: ["matter_id"],
   // notes (never subject or body)

@@ -3,7 +3,43 @@ import z from "zod";
 import { clioGet, clioPost, extractNextPageToken } from "../utils/clioClient.js";
 import { appendAuditLog } from "../utils/auditLog.js";
 
-const ACTIVITY_FIELDS = "id,date,quantity_in_hours,price,total,note,matter{id,display_number},user{id,name}";
+const ACTIVITY_FIELDS =
+  "id,date,quantity_in_hours,price,total,note,matter{id,display_number},user{id,name},activity_description{id,name,utbms_task_id,utbms_activity_id}";
+
+const UTBMS_PAIR_ERROR =
+  "utbms_task_id and utbms_activity_id must be sent together unless activity_description_id is supplied";
+
+/**
+ * The `activity_description` object Clio's Activity#create accepts. UTBMS codes
+ * live here, on the entry, not on the description record: Clio documents
+ * `activity_description[utbms_task_id]` + `activity_description[utbms_activity_id]`
+ * as the way to attach a UTBMS description, and requires both on a billable
+ * TimeEntry when the matter's `require_utbms_codes` is on, unless `id` already
+ * names a UTBMS description. Returns undefined when there is nothing to send.
+ */
+export function buildActivityDescription(
+  activity_description_id?: number,
+  utbms_task_id?: number,
+  utbms_activity_id?: number
+): Record<string, number> | undefined {
+  const out: Record<string, number> = {};
+  if (activity_description_id !== undefined) out["id"] = activity_description_id;
+  if (utbms_task_id !== undefined) out["utbms_task_id"] = utbms_task_id;
+  if (utbms_activity_id !== undefined) out["utbms_activity_id"] = utbms_activity_id;
+  return Object.keys(out).length ? out : undefined;
+}
+
+/** True when exactly one UTBMS id was given and there is no description id to make that legal. */
+function hasHalfUtbmsPair(activity_description_id?: number, utbms_task_id?: number, utbms_activity_id?: number): boolean {
+  if (activity_description_id !== undefined) return false;
+  return (utbms_task_id === undefined) !== (utbms_activity_id === undefined);
+}
+
+function mapActivityDescription(ad: any) {
+  return ad
+    ? { id: ad.id, name: ad.name ?? null, utbms_task_id: ad.utbms_task_id ?? null, utbms_activity_id: ad.utbms_activity_id ?? null }
+    : null;
+}
 
 export function registerActivityTools(server: McpServer): void {
   server.registerTool(
@@ -52,6 +88,7 @@ export function registerActivityTools(server: McpServer): void {
             description: e.note ?? null,
             matter: e.matter ? { id: e.matter.id, display_number: e.matter.display_number } : null,
             user: e.user ? { id: e.user.id, name: e.user.name } : null,
+            activity_description: mapActivityDescription(e.activity_description),
           })),
           total_count: data.meta?.records ?? entries.length,
           has_more: nextPageToken !== null,
@@ -84,11 +121,19 @@ export function registerActivityTools(server: McpServer): void {
         price: z.number().optional().describe("Hourly rate override; omit to use Clio rate hierarchy"),
         non_billable: z.boolean().optional().describe("Mark entry as non-billable (default: billable)"),
         no_charge: z.boolean().optional().describe("Show non-billable entry on bill anyway"),
-        activity_description_id: z.number().int().positive().optional().describe("Clio activity description / billing code ID"),
+        activity_description_id: z.number().int().positive().optional().describe("Clio activity description / billing code ID (see list_activity_descriptions)"),
+        utbms_task_id: z.number().int().positive().optional().describe("UTBMS task code ID, e.g. the ID for L120 (see list_utbms_codes). Send with utbms_activity_id unless activity_description_id already names a UTBMS description"),
+        utbms_activity_id: z.number().int().positive().optional().describe("UTBMS activity code ID, e.g. the ID for A104 (see list_utbms_codes). Send with utbms_task_id unless activity_description_id already names a UTBMS description"),
         user_id: z.number().int().positive().optional().describe("User to log time for; defaults to authenticated user"),
       },
     },
-    async ({ matter_id, date, quantity_in_hours, note, price, non_billable, no_charge, activity_description_id, user_id }) => {
+    async ({ matter_id, date, quantity_in_hours, note, price, non_billable, no_charge, activity_description_id, utbms_task_id, utbms_activity_id, user_id }) => {
+      const auditArgs = { matter_id, date, quantity_in_hours, note, price, non_billable, no_charge, activity_description_id, utbms_task_id, utbms_activity_id, user_id };
+      if (hasHalfUtbmsPair(activity_description_id, utbms_task_id, utbms_activity_id)) {
+        await appendAuditLog({ tool: "log_time_entry", args: auditArgs, outcome: "error", error_message: UTBMS_PAIR_ERROR, matter_id });
+        return { content: [{ type: "text", text: `Error: ${UTBMS_PAIR_ERROR}` }], isError: true };
+      }
+
       try {
         const activityData: Record<string, unknown> = {
           type: "TimeEntry",
@@ -100,7 +145,8 @@ export function registerActivityTools(server: McpServer): void {
         if (price !== undefined)                 activityData["price"] = price;
         if (non_billable !== undefined)           activityData["non_billable"] = non_billable;
         if (no_charge !== undefined)              activityData["no_charge"] = no_charge;
-        if (activity_description_id !== undefined) activityData["activity_description"] = { id: activity_description_id };
+        const activityDescription = buildActivityDescription(activity_description_id, utbms_task_id, utbms_activity_id);
+        if (activityDescription)                 activityData["activity_description"] = activityDescription;
         if (user_id !== undefined)               activityData["user"] = { id: user_id };
 
         const data = await clioPost("/activities.json", { data: activityData }, { fields: ACTIVITY_FIELDS });
@@ -108,7 +154,7 @@ export function registerActivityTools(server: McpServer): void {
 
         await appendAuditLog({
           tool: "log_time_entry",
-          args: { matter_id, date, quantity_in_hours, note, price, non_billable, no_charge, activity_description_id, user_id },
+          args: auditArgs,
           outcome: "success",
           matter_id,
         });
@@ -128,6 +174,7 @@ export function registerActivityTools(server: McpServer): void {
                 non_billable: entry.non_billable ?? false,
                 matter: entry.matter ? { id: entry.matter.id, display_number: entry.matter.display_number } : null,
                 user: entry.user ? { id: entry.user.id, name: entry.user.name } : null,
+                activity_description: mapActivityDescription(entry.activity_description),
               },
             }, null, 2),
           }],
@@ -135,7 +182,7 @@ export function registerActivityTools(server: McpServer): void {
       } catch (err: any) {
         await appendAuditLog({
           tool: "log_time_entry",
-          args: { matter_id, date, quantity_in_hours, note, price, non_billable, no_charge, activity_description_id, user_id },
+          args: auditArgs,
           outcome: "error",
           error_message: err.message,
           matter_id,
@@ -158,23 +205,28 @@ export function registerActivityTools(server: McpServer): void {
         price: z.number().optional().describe("Hourly rate (TimeEntry) or expense amount (Expense types)"),
         non_billable: z.boolean().optional().describe("Non-billable flag (TimeEntry only)"),
         no_charge: z.boolean().optional().describe("Show non-billable on bill"),
-        activity_description_id: z.number().int().positive().optional().describe("Activity description / billing code ID"),
+        activity_description_id: z.number().int().positive().optional().describe("Activity description / billing code ID (see list_activity_descriptions)"),
+        utbms_task_id: z.number().int().positive().optional().describe("UTBMS task code ID (TimeEntry only; see list_utbms_codes). Send with utbms_activity_id unless activity_description_id already names a UTBMS description"),
+        utbms_activity_id: z.number().int().positive().optional().describe("UTBMS activity code ID (TimeEntry only; see list_utbms_codes). Send with utbms_task_id unless activity_description_id already names a UTBMS description"),
         user_id: z.number().int().positive().optional().describe("User to associate; defaults to authenticated user"),
         reference: z.string().optional().describe("Check reference (HardCostEntry only)"),
         tax_setting: z.enum(["no_tax", "tax_1_only", "tax_2_only", "tax_1_and_tax_2"]).optional().describe("Tax setting (expense entries)"),
       },
     },
-    async ({ type, date, matter_id, note, quantity_in_hours, price, non_billable, no_charge, activity_description_id, user_id, reference, tax_setting }) => {
-      if (type === "TimeEntry" && quantity_in_hours === undefined) {
+    async ({ type, date, matter_id, note, quantity_in_hours, price, non_billable, no_charge, activity_description_id, utbms_task_id, utbms_activity_id, user_id, reference, tax_setting }) => {
+      const auditArgs = { type, date, matter_id, note, quantity_in_hours, price, non_billable, no_charge, activity_description_id, utbms_task_id, utbms_activity_id, user_id, tax_setting };
+      const rejectWith = async (message: string) => {
         await appendAuditLog({
           tool: "create_activity",
-          args: { type, date, matter_id, note, quantity_in_hours, price, non_billable, no_charge, activity_description_id, user_id },
+          args: auditArgs,
           outcome: "error",
-          error_message: "quantity_in_hours is required for TimeEntry",
+          error_message: message,
           ...(matter_id !== undefined && { matter_id }),
         });
-        return { content: [{ type: "text", text: "Error: quantity_in_hours is required for TimeEntry" }], isError: true };
-      }
+        return { content: [{ type: "text" as const, text: `Error: ${message}` }], isError: true };
+      };
+      if (type === "TimeEntry" && quantity_in_hours === undefined) return rejectWith("quantity_in_hours is required for TimeEntry");
+      if (hasHalfUtbmsPair(activity_description_id, utbms_task_id, utbms_activity_id)) return rejectWith(UTBMS_PAIR_ERROR);
 
       try {
         const activityData: Record<string, unknown> = { type, date };
@@ -184,7 +236,8 @@ export function registerActivityTools(server: McpServer): void {
         if (price !== undefined)                   activityData["price"] = price;
         if (non_billable !== undefined)            activityData["non_billable"] = non_billable;
         if (no_charge !== undefined)               activityData["no_charge"] = no_charge;
-        if (activity_description_id !== undefined) activityData["activity_description"] = { id: activity_description_id };
+        const activityDescription = buildActivityDescription(activity_description_id, utbms_task_id, utbms_activity_id);
+        if (activityDescription)                   activityData["activity_description"] = activityDescription;
         if (user_id !== undefined)                 activityData["user"] = { id: user_id };
         if (reference !== undefined)               activityData["reference"] = reference;
         if (tax_setting !== undefined)             activityData["tax_setting"] = tax_setting;
@@ -194,7 +247,7 @@ export function registerActivityTools(server: McpServer): void {
 
         await appendAuditLog({
           tool: "create_activity",
-          args: { type, date, matter_id, note, quantity_in_hours, price, non_billable, no_charge, activity_description_id, user_id },
+          args: auditArgs,
           outcome: "success",
           ...(matter_id !== undefined && { matter_id }),
         });
@@ -215,6 +268,7 @@ export function registerActivityTools(server: McpServer): void {
                 non_billable: entry.non_billable ?? false,
                 matter: entry.matter ? { id: entry.matter.id, display_number: entry.matter.display_number } : null,
                 user: entry.user ? { id: entry.user.id, name: entry.user.name } : null,
+                activity_description: mapActivityDescription(entry.activity_description),
               },
             }, null, 2),
           }],
@@ -222,7 +276,7 @@ export function registerActivityTools(server: McpServer): void {
       } catch (err: any) {
         await appendAuditLog({
           tool: "create_activity",
-          args: { type, date, matter_id, note, quantity_in_hours, price, non_billable, no_charge, activity_description_id, user_id },
+          args: auditArgs,
           outcome: "error",
           error_message: err.message,
           ...(matter_id !== undefined && { matter_id }),
