@@ -154,9 +154,13 @@ export const AUDIT_ARG_ALLOWLIST: RedactPolicy = {
   list_calendars: [],
   create_calendar_entry: ["start_at", "end_at", "calendar_owner_id", "all_day", "matter_id", "send_email_notification", "attendee_ids"],
   // time entries and activities (never the note or reference text)
+  // UTBMS codes are a published standard set, not client data
   list_time_entries: ["matter_id", "start_date", "end_date", "limit"],
-  log_time_entry: ["matter_id", "date", "quantity_in_hours", "price", "non_billable", "no_charge", "activity_description_id", "user_id"],
-  create_activity: ["type", "date", "matter_id", "quantity_in_hours", "price", "non_billable", "no_charge", "activity_description_id", "user_id", "tax_setting"],
+  list_activity_descriptions: ["utbms_task_code", "utbms_activity_code", "utbms_only"],
+  log_time_entry: ["matter_id", "date", "quantity_in_hours", "price", "non_billable", "no_charge", "activity_description_id", "utbms_task_code", "utbms_activity_code", "user_id"],
+  update_time_entry: ["activity_id", "matter_id", "date", "quantity_in_hours", "price", "non_billable", "no_charge", "activity_description_id", "utbms_task_code", "utbms_activity_code", "user_id"],
+  delete_time_entry: ["activity_id"],
+  create_activity: ["type", "date", "matter_id", "quantity_in_hours", "price", "non_billable", "no_charge", "activity_description_id", "utbms_task_code", "utbms_activity_code", "user_id", "tax_setting"],
   // billing
   get_billing_summary: ["matter_id"],
   // notes (never subject or body)

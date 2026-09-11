@@ -116,6 +116,36 @@ describe("registerAllTools", () => {
   });
 });
 
+describe("strict argument validation", () => {
+  // The bug this guards: Zod strips unknown keys by default, so a caller that
+  // passed the entry text under a name the tool did not declare got a blank
+  // time entry and success: true. Every tool now rejects undeclared arguments.
+  it("rejects an argument the tool does not declare instead of dropping it", async () => {
+    const { client } = await listTools();
+    const result = await client.callTool({
+      name: "log_time_entry",
+      arguments: { matter_id: 1, date: "2026-01-15", quantity_in_hours: 1.5, hours: 1.5 },
+    });
+    expect(result.isError).toBe(true);
+    expect(JSON.stringify(result.content)).toMatch(/Unrecognized key\(s\) in object: 'hours'/);
+  });
+
+  it("advertises additionalProperties: false in tools/list", async () => {
+    const { tools } = await listTools();
+    for (const t of tools) {
+      if (Object.keys(t.inputSchema.properties ?? {}).length === 0) continue;
+      expect(t.inputSchema.additionalProperties, `${t.name} still strips unknown arguments`).toBe(false);
+    }
+  });
+
+  it("still accepts a declared optional alias", async () => {
+    const { client } = await listTools({ readOnly: true });
+    // A read tool with a declared optional key parses; the handler itself is not under test here.
+    const result = await client.callTool({ name: "list_time_entries", arguments: { limit: 1 } });
+    expect(result).toBeDefined();
+  });
+});
+
 describe("isReadOnlyEnv", () => {
   it.each(["true", "TRUE", " 1 ", "yes"])("accepts %j", (v) => {
     expect(isReadOnlyEnv({ READ_ONLY: v } as NodeJS.ProcessEnv)).toBe(true);

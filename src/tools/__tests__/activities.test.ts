@@ -1,14 +1,27 @@
 import { vi, describe, it, expect, beforeEach } from "vitest";
 
-const { mockClioGet, mockClioPost, mockAppendAuditLog } = vi.hoisted(() => ({
-  mockClioGet: vi.fn(),
-  mockClioPost: vi.fn(),
-  mockAppendAuditLog: vi.fn().mockResolvedValue(undefined),
-}));
+const { mockClioGet, mockClioPost, mockClioPatch, mockClioDelete, mockClioGetAllPages, mockAppendAuditLog, MockClioApiError } = vi.hoisted(() => {
+  class MockClioApiError extends Error {
+    constructor(public readonly statusCode: number, message: string) { super(message); this.name = "ClioApiError"; }
+  }
+  return {
+    mockClioGet: vi.fn(),
+    mockClioPost: vi.fn(),
+    mockClioPatch: vi.fn(),
+    mockClioDelete: vi.fn(),
+    mockClioGetAllPages: vi.fn(),
+    mockAppendAuditLog: vi.fn().mockResolvedValue(undefined),
+    MockClioApiError,
+  };
+});
 
 vi.mock("../../utils/clioClient.js", () => ({
   clioGet: mockClioGet,
   clioPost: mockClioPost,
+  clioPatch: mockClioPatch,
+  clioDelete: mockClioDelete,
+  clioGetAllPages: mockClioGetAllPages,
+  ClioApiError: MockClioApiError,
   extractNextPageToken: (meta: any) => {
     const nextUrl = meta?.paging?.next;
     if (!nextUrl) return null;
@@ -50,10 +63,20 @@ const FAKE_ENTRY = {
   user: { id: 7, name: "Alice" },
 };
 
+const DESCRIPTIONS = [
+  { id: 501, name: "Legal research", default: false, utbms_task: { id: 1, code: "L110", name: "Fact Investigation" }, utbms_activity: { id: 2, code: "A104", name: "Review/analyze" } },
+  { id: 502, name: "Pleadings drafting", default: false, utbms_task: { id: 3, code: "L210", name: "Pleadings" }, utbms_activity: { id: 4, code: "A103", name: "Draft/revise" } },
+  { id: 503, name: "Pleadings review", default: false, utbms_task: { id: 3, code: "L210", name: "Pleadings" }, utbms_activity: { id: 2, code: "A104", name: "Review/analyze" } },
+  { id: 504, name: "Uncoded", default: true, utbms_task: null, utbms_activity: null },
+];
+
 beforeEach(() => {
   vi.clearAllMocks();
   mockAppendAuditLog.mockResolvedValue(undefined);
   mockClioPost.mockResolvedValue({ data: FAKE_ENTRY });
+  mockClioPatch.mockResolvedValue({ data: FAKE_ENTRY });
+  mockClioDelete.mockResolvedValue(undefined);
+  mockClioGetAllPages.mockResolvedValue(DESCRIPTIONS);
 });
 
 // ─── list_time_entries ────────────────────────────────────────────────────────
@@ -262,5 +285,169 @@ describe("create_activity", () => {
       error_message: "timeout",
       args: expect.objectContaining({ price: 150, non_billable: true }),
     }));
+  });
+});
+
+// ─── silent-drop regressions ─────────────────────────────────────────────────
+
+describe("log_time_entry: note alias and UTBMS codes", () => {
+  it("accepts the entry text as `description` and sends it as Clio's `note`", async () => {
+    const { handlers } = buildServer();
+    const result = await handlers["log_time_entry"]({ matter_id: 1, date: "2026-01-15", quantity_in_hours: 1, description: "Drafted motion" }) as any;
+    expect(result.isError).toBeUndefined();
+    const [, body] = mockClioPost.mock.calls[0];
+    expect((body as any).data.note).toBe("Drafted motion");
+  });
+
+  it("refuses `note` and `description` with different values before writing", async () => {
+    const { handlers } = buildServer();
+    const result = await handlers["log_time_entry"]({ matter_id: 1, date: "2026-01-15", quantity_in_hours: 1, note: "a", description: "b" }) as any;
+    expect(result.isError).toBe(true);
+    expect(mockClioPost).not.toHaveBeenCalled();
+  });
+
+  it("resolves a UTBMS task/activity pair to the saved activity description id", async () => {
+    const { handlers } = buildServer();
+    const result = await handlers["log_time_entry"]({ matter_id: 1, date: "2026-01-15", quantity_in_hours: 1, note: "x", utbms_task_code: "l210", utbms_activity_code: "A103" }) as any;
+    expect(result.isError).toBeUndefined();
+    expect(mockClioGetAllPages).toHaveBeenCalledWith("/activity_descriptions.json", expect.objectContaining({ fields: expect.stringContaining("utbms_task") }));
+    const [, body] = mockClioPost.mock.calls[0];
+    expect((body as any).data.activity_description).toEqual({ id: 502 });
+    expect((body as any).data).not.toHaveProperty("utbms_task_code");
+    expect(mockAppendAuditLog).toHaveBeenCalledWith(expect.objectContaining({
+      outcome: "success",
+      args: expect.objectContaining({ activity_description_id: 502, utbms_task_code: "l210" }),
+    }));
+  });
+
+  it("fails without writing when no saved description carries the codes", async () => {
+    const { handlers } = buildServer();
+    const result = await handlers["log_time_entry"]({ matter_id: 1, date: "2026-01-15", quantity_in_hours: 1, utbms_task_code: "L999", utbms_activity_code: "A104" }) as any;
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toMatch(/No saved activity description carries UTBMS task L999 \+ activity A104/);
+    expect(result.content[0].text).toContain("501");
+    expect(mockClioPost).not.toHaveBeenCalled();
+  });
+
+  it("fails without writing when the pair is ambiguous", async () => {
+    mockClioGetAllPages.mockResolvedValue([...DESCRIPTIONS, { ...DESCRIPTIONS[1], id: 599, name: "Duplicate" }]);
+    const { handlers } = buildServer();
+    const result = await handlers["log_time_entry"]({ matter_id: 1, date: "2026-01-15", quantity_in_hours: 1, utbms_task_code: "L210", utbms_activity_code: "A103" }) as any;
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toMatch(/2 saved activity descriptions/);
+    expect(mockClioPost).not.toHaveBeenCalled();
+  });
+
+  it("refuses codes together with activity_description_id", async () => {
+    const { handlers } = buildServer();
+    const result = await handlers["log_time_entry"]({ matter_id: 1, date: "2026-01-15", quantity_in_hours: 1, activity_description_id: 5, utbms_task_code: "L210" }) as any;
+    expect(result.isError).toBe(true);
+    expect(mockClioPost).not.toHaveBeenCalled();
+  });
+
+  it("rounds hours to whole seconds", async () => {
+    const { handlers } = buildServer();
+    await handlers["log_time_entry"]({ matter_id: 1, date: "2026-01-15", quantity_in_hours: 1.1 });
+    const [, body] = mockClioPost.mock.calls[0];
+    expect((body as any).data.quantity).toBe(3960);
+  });
+
+  it("echoes note and activity_description in the response", async () => {
+    mockClioPost.mockResolvedValue({ data: { ...FAKE_ENTRY, activity_description: { id: 502, name: "Pleadings drafting" } } });
+    const { handlers } = buildServer();
+    const result = await handlers["log_time_entry"]({ matter_id: 1, date: "2026-01-15", quantity_in_hours: 1, note: "Research", utbms_task_code: "L210", utbms_activity_code: "A103" }) as any;
+    const parsed = JSON.parse(result.content[0].text);
+    expect(parsed.time_entry.note).toBe("Research");
+    expect(parsed.time_entry.activity_description).toEqual({ id: 502, name: "Pleadings drafting", utbms_task_code: "L210", utbms_activity_code: "A103" });
+  });
+});
+
+describe("list_activity_descriptions", () => {
+  it("returns every description with its codes", async () => {
+    const { handlers } = buildServer();
+    const result = await handlers["list_activity_descriptions"]({ utbms_only: false }) as any;
+    const parsed = JSON.parse(result.content[0].text);
+    expect(parsed.total_count).toBe(4);
+    expect(parsed.activity_descriptions[0]).toEqual({
+      id: 501, name: "Legal research", default: false,
+      utbms_task_code: "L110", utbms_task_name: "Fact Investigation",
+      utbms_activity_code: "A104", utbms_activity_name: "Review/analyze",
+    });
+  });
+
+  it("filters by code, case-insensitively", async () => {
+    const { handlers } = buildServer();
+    const result = await handlers["list_activity_descriptions"]({ utbms_task_code: "l210", utbms_only: false }) as any;
+    const parsed = JSON.parse(result.content[0].text);
+    expect(parsed.activity_descriptions.map((d: any) => d.id)).toEqual([502, 503]);
+  });
+});
+
+describe("update_time_entry", () => {
+  it("patches only the fields given, with hours converted", async () => {
+    const { handlers } = buildServer();
+    const result = await handlers["update_time_entry"]({ activity_id: 99, quantity_in_hours: 0.5, description: "Fixed" }) as any;
+    expect(result.isError).toBeUndefined();
+    expect(mockClioPatch).toHaveBeenCalledWith("/activities/99.json", { data: { quantity: 1800, note: "Fixed" } }, expect.objectContaining({ fields: expect.any(String) }));
+  });
+
+  it("resolves UTBMS codes on update", async () => {
+    const { handlers } = buildServer();
+    await handlers["update_time_entry"]({ activity_id: 99, utbms_task_code: "L110", utbms_activity_code: "A104" });
+    const [, body] = mockClioPatch.mock.calls[0];
+    expect((body as any).data).toEqual({ activity_description: { id: 501 } });
+  });
+
+  it("rejects an update with nothing to change", async () => {
+    const { handlers } = buildServer();
+    const result = await handlers["update_time_entry"]({ activity_id: 99 }) as any;
+    expect(result.isError).toBe(true);
+    expect(mockClioPatch).not.toHaveBeenCalled();
+  });
+
+  it("reports a missing entry as not_found", async () => {
+    mockClioPatch.mockRejectedValueOnce(new MockClioApiError(404, "not found"));
+    const { handlers } = buildServer();
+    const result = await handlers["update_time_entry"]({ activity_id: 99, note: "x" }) as any;
+    expect(result.isError).toBe(true);
+    expect(mockAppendAuditLog).toHaveBeenCalledWith(expect.objectContaining({ tool: "update_time_entry", outcome: "not_found" }));
+  });
+});
+
+describe("delete_time_entry", () => {
+  it("reads the entry, then deletes a time entry that is not billed", async () => {
+    mockClioGet.mockResolvedValue({ data: { id: 99, type: "TimeEntry", billed: false, date: "2026-01-15", quantity_in_hours: 1, note: "x", matter: { id: 1, display_number: "2026-0001" } } });
+    const { handlers } = buildServer();
+    const result = await handlers["delete_time_entry"]({ activity_id: 99 }) as any;
+    expect(result.isError).toBeUndefined();
+    expect(mockClioDelete).toHaveBeenCalledWith("/activities/99.json");
+    expect(mockAppendAuditLog).toHaveBeenCalledWith(expect.objectContaining({ tool: "delete_time_entry", outcome: "success", matter_id: 1 }));
+    expect(JSON.parse(result.content[0].text).deleted.id).toBe(99);
+  });
+
+  it("refuses to delete an expense", async () => {
+    mockClioGet.mockResolvedValue({ data: { id: 99, type: "ExpenseEntry", billed: false } });
+    const { handlers } = buildServer();
+    const result = await handlers["delete_time_entry"]({ activity_id: 99 }) as any;
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toMatch(/only time entries can be deleted/);
+    expect(mockClioDelete).not.toHaveBeenCalled();
+  });
+
+  it("refuses to delete a billed entry", async () => {
+    mockClioGet.mockResolvedValue({ data: { id: 99, type: "TimeEntry", billed: true } });
+    const { handlers } = buildServer();
+    const result = await handlers["delete_time_entry"]({ activity_id: 99 }) as any;
+    expect(result.isError).toBe(true);
+    expect(mockClioDelete).not.toHaveBeenCalled();
+  });
+
+  it("reports a missing entry as not_found", async () => {
+    mockClioGet.mockRejectedValueOnce(new MockClioApiError(404, "not found"));
+    const { handlers } = buildServer();
+    const result = await handlers["delete_time_entry"]({ activity_id: 99 }) as any;
+    expect(result.isError).toBe(true);
+    expect(mockClioDelete).not.toHaveBeenCalled();
+    expect(mockAppendAuditLog).toHaveBeenCalledWith(expect.objectContaining({ outcome: "not_found" }));
   });
 });

@@ -184,6 +184,16 @@ export async function clioPatch(path: string, body: unknown, params?: Record<str
   return text.trim() ? JSON.parse(text) : {};
 }
 
+/** DELETE. Clio answers 204 with no body; anything else is surfaced by clioFetch. */
+export async function clioDelete(path: string): Promise<void> {
+  const token = await resolveAccessToken();
+  const url = new URL(`${getBase()}${path}`);
+  await clioFetch(url.toString(), {
+    method: "DELETE",
+    headers: { Authorization: `Bearer ${token}`, "Content-Type": "application/json" },
+  });
+}
+
 export function extractNextPageToken(meta: any): string | null {
   const nextUrl = meta?.paging?.next;
   if (!nextUrl) return null;
