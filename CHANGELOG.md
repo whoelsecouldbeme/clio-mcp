@@ -4,6 +4,48 @@ All notable changes to this project are documented here. The format follows [Kee
 
 ## [Unreleased]
 
+### Fixed
+- **Undeclared arguments were silently dropped, and two of them produced
+  defective time entries.** Every tool's input schema was a plain Zod shape,
+  and Zod's default for an object is to strip keys it does not know. So a call
+  to `log_time_entry` that carried the entry text as `description` (the tool
+  only knew `note`) came back `success: true` with a blank entry in Clio, and
+  a call carrying `utbms_task_code` / `utbms_activity_code` came back
+  `success: true` with no codes attached. Reported after a session created ten
+  such entries (five blank, five uncoded) before finding the working shape.
+  The registry now wraps every tool's schema in a strict object, so an
+  unrecognised argument fails the call with an `Unrecognized key` error
+  before anything is sent to Clio. This applies to all 39 tools.
+- `quantity_in_hours` is rounded to whole seconds before it is sent (1.1 h
+  used to go out as 3960.0000000000005).
+
+### Added
+- **`note` has an alias, `description`**, on `log_time_entry`,
+  `update_time_entry` and `create_activity`. Either works; both with
+  different values is an error.
+- **UTBMS codes on time entries.** Clio attaches UTBMS codes only through a
+  saved activity description that carries the task/activity pair; raw codes
+  on the activity body are ignored. `log_time_entry`, `update_time_entry` and
+  `create_activity` accept `utbms_task_code` and `utbms_activity_code`,
+  resolve them against the account's activity descriptions, and send the
+  matching `activity_description_id`. No match, or more than one, is an error
+  that names the candidates, and nothing is written. Verified against the
+  code, **not yet against a live account**: the association names
+  `utbms_task` and `utbms_activity` on `/activity_descriptions.json` come
+  from Clio's API reference.
+- **`list_activity_descriptions`** lists the saved activity descriptions with
+  their UTBMS codes and supports filtering by either code.
+- **`update_time_entry`** changes the note, hours, date, rate, billing flags,
+  activity description, matter or user on an existing time entry.
+- **`delete_time_entry`** removes a time entry. It reads the activity first
+  and refuses anything that is not a `TimeEntry` or that is already on a
+  bill, so expenses and costs still cannot be deleted through the connector.
+  Marked `destructiveHint: true`, hidden by `READ_ONLY`, audit-logged.
+- Time entry responses now echo `note`, `non_billable`, `no_charge` and
+  `activity_description` so a caller can confirm an entry is not blank.
+- `log_time_entry`'s description now states the parameter name and type for
+  hours (`quantity_in_hours`, a JSON number).
+
 ## [2.3.0] - 2026-09-07
 
 Matter stages and `create_custom_field`, previously staged and unverified,

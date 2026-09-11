@@ -5,7 +5,7 @@
 
 Open-source Model Context Protocol (MCP) connector that lets Claude read live data from [Clio](https://www.clio.com) (matters, custom fields, notes, contacts, documents, folders, tasks, calendar, and billing) without copying client information into chat windows. Built for law firms that care about attorney-client privilege, ABA Opinion 512 compliance, and keeping AI workflows inside their existing practice management stack.
 
-> **TL;DR:** 36 Clio tools exposed to Claude across stdio and HTTP/SSE transports. Audit-logged for ABA Opinion 512. OAuth tokens encrypted at rest with AES-256-GCM. Local-only by default: you register your own Clio developer app, and no relay server sits in between. A separate one-click "listed" variant for the Clio App Directory uses a minimal login-only broker instead, see [Listed / one-click install variant](#listed--one-click-install-variant-app-directory). MIT license, free forever.
+> **TL;DR:** 39 Clio tools exposed to Claude across stdio and HTTP/SSE transports. Audit-logged for ABA Opinion 512. OAuth tokens encrypted at rest with AES-256-GCM. Local-only by default: you register your own Clio developer app, and no relay server sits in between. A separate one-click "listed" variant for the Clio App Directory uses a minimal login-only broker instead, see [Listed / one-click install variant](#listed--one-click-install-variant-app-directory). MIT license, free forever.
 
 **Who this is for:** Law firm IT, legal operations teams, tech-forward partners, and engineers at legal tech companies. If you can follow a five-step terminal install, you can use this.
 
@@ -66,7 +66,7 @@ ABA Opinion 512 (2023) requires attorneys using AI tools to understand how those
 
 - **No data retention by the connector.** The connector does not store matter data, client names, or any Clio content. It fetches from the API and passes results to Claude. The only thing persisted locally is your authentication token, and that is encrypted (see below).
 
-- **Twelve write tools, all logged, all optional.** The connector can create matters, custom fields, notes, tasks, folders, calendar entries, time entries and activities, update matters and tasks, complete tasks, and upload documents. It never deletes anything and never touches contacts or billing records. Every write is recorded in the audit log, and `READ_ONLY=true` removes all twelve write tools from the server entirely (see [Read-only mode](#read-only-mode)), so a firm can start with read access and turn writes on when it has decided to.
+- **Fourteen write tools, all logged, all optional.** The connector can create matters, custom fields, notes, tasks, folders, calendar entries, time entries and activities, update matters, tasks and time entries, complete tasks, and upload documents. The only thing it can delete is a time entry (`delete_time_entry`, for cleaning up an entry that was logged wrongly; it refuses expenses, costs and anything already on a bill). It never touches contacts or billing records. Every write is recorded in the audit log, and `READ_ONLY=true` removes all fourteen write tools from the server entirely (see [Read-only mode](#read-only-mode)), so a firm can start with read access and turn writes on when it has decided to.
 
 ### Token security: encryption at rest
 
@@ -386,6 +386,8 @@ You should see your Clio user ID and token expiry time.
 
 Claude selects and calls these tools automatically based on your questions. You do not need to invoke them by name.
 
+Every tool validates its arguments strictly: a parameter the tool does not declare is rejected with an `Unrecognized key` error rather than silently dropped. Before 2.4.0 an undeclared argument was stripped, so passing the text of a time entry as `description` to a tool that only knew `note` produced a blank entry and `success: true`.
+
 ### Auth (3 tools)
 
 | Tool | What it does |
@@ -462,13 +464,16 @@ Claude selects and calls these tools automatically based on your questions. You 
 | `list_calendar_entries` | `from`, `to`, `limit`, `page_token` | Lists calendar entries within a date range (YYYY-MM-DD or YYYY-MM-DDTHH:MM); returns a paginated envelope with `total_count`, `has_more`, and `next_page_token` |
 | `create_calendar_entry` | `summary`, `start_at`, `end_at`, `calendar_owner_id`, `description`, `all_day`, `matter_id`, `location`, `send_email_notification`, `attendee_ids` | Creates a calendar entry (hearing, deadline, meeting); `start_at`/`end_at` accept date or datetime |
 
-### Time entries (3 tools)
+### Time entries (6 tools)
 
 | Tool | Inputs | What it does |
 |---|---|---|
 | `list_time_entries` | `matter_id`, `start_date`, `end_date`, `limit`, `page_token` | Lists billable time entries with optional filters; returns a paginated envelope with `total_count`, `has_more`, and `next_page_token` |
-| `log_time_entry` | `matter_id`, `date`, `quantity_in_hours`, `note`, `price`, `non_billable`, `no_charge`, `activity_description_id`, `user_id` | Creates a new billable (or non-billable) time entry on a matter |
-| `create_activity` | `type`, `date`, `matter_id`, `note`, `quantity_in_hours`, `price`, `non_billable`, `no_charge`, `activity_description_id`, `user_id`, `reference`, `tax_setting` | Creates any Clio activity type: TimeEntry, ExpenseEntry, HardCostEntry, or SoftCostEntry |
+| `list_activity_descriptions` | `utbms_task_code`, `utbms_activity_code`, `utbms_only` | Lists the account's saved activity descriptions (billing codes) with their UTBMS task and activity codes; the `id` is what `activity_description_id` takes |
+| `log_time_entry` | `matter_id`, `date`, `quantity_in_hours`, `note` (or `description`), `price`, `non_billable`, `no_charge`, `activity_description_id` or `utbms_task_code` + `utbms_activity_code`, `user_id` | Creates a new billable (or non-billable) time entry on a matter; UTBMS codes are resolved to a saved activity description and the call fails if none matches |
+| `update_time_entry` | `activity_id`, plus any of `date`, `quantity_in_hours`, `note`, `price`, `non_billable`, `no_charge`, `activity_description_id` or UTBMS codes, `matter_id`, `user_id` | Changes fields on an existing time entry (fix a blank note, attach a billing code, correct hours) |
+| `delete_time_entry` | `activity_id` | Deletes a time entry; refuses expenses, costs and entries already on a bill |
+| `create_activity` | `type`, `date`, `matter_id`, `note` (or `description`), `quantity_in_hours`, `price`, `non_billable`, `no_charge`, `activity_description_id` or UTBMS codes, `user_id`, `reference`, `tax_setting` | Creates any Clio activity type: TimeEntry, ExpenseEntry, HardCostEntry, or SoftCostEntry |
 
 ### Billing (1 tool)
 
@@ -535,11 +540,11 @@ All settings are passed as environment variables (in your Claude Desktop config 
 | `CLIO_API_BASE` | No | `<region host>/api/v4` | Advanced override for the API base URL. Takes precedence over `CLIO_REGION` |
 | `CLIO_AUTH_URL` | No | `<region host>/oauth/authorize` | Advanced override for the OAuth authorization endpoint |
 | `CLIO_TOKEN_URL` | No | `<region host>/oauth/token` | Advanced override for the OAuth token endpoint |
-| `READ_ONLY` | No | `false` | `true`, `1` or `yes` leaves the twelve write tools unregistered so Claude can read Clio but never change it. Works on both transports. See [Read-only mode](#read-only-mode) |
+| `READ_ONLY` | No | `false` | `true`, `1` or `yes` leaves the fourteen write tools unregistered so Claude can read Clio but never change it. Works on both transports. See [Read-only mode](#read-only-mode) |
 
 ### Read-only mode
 
-Set `READ_ONLY=true` and the connector never registers its twelve write tools (`create_matter`, `update_matter`, `create_custom_field`, `create_note`, `create_task`, `update_task`, `complete_task`, `create_calendar_entry`, `log_time_entry`, `create_activity`, `upload_document`, `create_folder`). They do not appear in Claude's tool list and a call to any of them is rejected by the server, so this is a server-side guarantee rather than a client-side prompt. The read tools, the auth tools and the audit export keep working. Without it, the only thing standing between Claude and a write is the approval prompt your MCP client shows, which belongs to the client, not to this connector.
+Set `READ_ONLY=true` and the connector never registers its fourteen write tools (`create_matter`, `update_matter`, `create_custom_field`, `create_note`, `create_task`, `update_task`, `complete_task`, `create_calendar_entry`, `log_time_entry`, `update_time_entry`, `delete_time_entry`, `create_activity`, `upload_document`, `create_folder`). They do not appear in Claude's tool list and a call to any of them is rejected by the server, so this is a server-side guarantee rather than a client-side prompt. The read tools, the auth tools and the audit export keep working. Without it, the only thing standing between Claude and a write is the approval prompt your MCP client shows, which belongs to the client, not to this connector.
 
 For Claude Desktop, add it next to the other variables:
 

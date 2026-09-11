@@ -13,6 +13,7 @@
  * write tool. Add every new tool here; `registry.test.ts` enforces it.
  */
 import type { McpServer, RegisteredTool } from "@modelcontextprotocol/sdk/server/mcp.js";
+import z from "zod";
 import { registerAuthTools } from "../auth/authTools.js";
 import { registerResources } from "../resources/index.js";
 import { registerMatterTools } from "./matters.js";
@@ -52,6 +53,8 @@ export const WRITE_TOOLS: ReadonlySet<string> = new Set([
   "complete_task",
   "create_calendar_entry",
   "log_time_entry",
+  "update_time_entry",
+  "delete_time_entry",
   "create_activity",
   "create_note",
   "update_matter",
@@ -104,7 +107,10 @@ export const TOOL_META: Readonly<Record<string, ToolMeta>> = {
   create_calendar_entry: { title: "Create calendar entry", readOnly: false },
   // activities
   list_time_entries: { title: "List time entries", readOnly: true },
+  list_activity_descriptions: { title: "List activity descriptions", readOnly: true },
   log_time_entry: { title: "Log time entry", readOnly: false },
+  update_time_entry: { title: "Update time entry", readOnly: false, idempotent: true },
+  delete_time_entry: { title: "Delete time entry", readOnly: false, destructive: true },
   create_activity: { title: "Create activity", readOnly: false },
   // billing
   get_billing_summary: { title: "Get billing summary", readOnly: true },
@@ -165,6 +171,26 @@ export function isReadOnlyEnv(env: NodeJS.ProcessEnv = process.env): boolean {
  * handles keyed by tool name. Tools that are skipped are simply never
  * registered, so they do not appear in tools/list and tools/call rejects them.
  */
+/** A raw Zod shape (plain object of Zod fields) as opposed to a built Zod schema. */
+function isRawShape(schema: unknown): schema is z.ZodRawShape {
+  return (
+    typeof schema === "object" && schema !== null &&
+    typeof (schema as any).safeParse !== "function" && !("_def" in (schema as object))
+  );
+}
+
+/**
+ * Build the input schema every tool validates against. A raw shape is wrapped
+ * in a strict object so an argument the tool does not declare is rejected with
+ * an "Unrecognized key" error instead of being stripped. Zod's default is to
+ * strip, and that default is how a caller could pass the entry text as
+ * `description` to a tool that only knew `note` and get a blank time entry
+ * back with success: true.
+ */
+export function strictInputSchema(schema: unknown): unknown {
+  return isRawShape(schema) ? z.object(schema).strict() : schema;
+}
+
 export function registerAllTools(
   server: McpServer,
   opts: RegisterAllToolsOptions = {}
@@ -195,7 +221,12 @@ export function registerAllTools(
       openWorldHint: true,
       ...(config?.annotations ?? {}),
     };
-    const tool = server.registerTool(name, { title: meta?.title ?? name, ...config, annotations }, cb);
+    const inputSchema = strictInputSchema(config?.inputSchema);
+    const tool = server.registerTool(
+      name,
+      { title: meta?.title ?? name, ...config, ...(inputSchema !== undefined && { inputSchema }), annotations },
+      cb
+    );
     registered.set(name, tool);
     return tool;
   };
